@@ -498,7 +498,7 @@ def render_eda_storyline_panels(df: pd.DataFrame):
 
     return ui.div(
         ui.div(
-            ui.h5("3. 시계열 패턴 분석", class_="billx-panel-title"),
+            ui.h5("시계열 패턴 분석", class_="billx-panel-title"),
             ui.div(
                 "월별/일별/시간대별/계절별 전기요금 패턴으로 시간 기반 피처 설계 근거 확인",
                 class_="alert alert-info mb-3",

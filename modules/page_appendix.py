@@ -187,7 +187,7 @@ def appendix_ui():
 
                     # === 5. 파생 피처 설계 근거 ===
                     ui.div(
-                        ui.h5("파생 피처 설계 근거", class_="billx-panel-title"),
+                        ui.h5("추가 설계 근거", class_="billx-panel-title"),
                         ui.div("모델 성능 향상을 위한 파생 피처 설계의 통계적 타당성을 검증합니다.", class_="alert alert-info mb-0"),
                         class_="billx-panel",
                     ),
