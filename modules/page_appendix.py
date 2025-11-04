@@ -1,9 +1,5 @@
 # ============================ modules/page_appendix.py (CSS-scoped) ============================
 from shiny import ui, render, reactive
-# ============================ modules/page_appendix.py (SCOPED, FULL) ============================
-from __future__ import annotations
-
-from shiny import ui, render
 from shared import report_df
 
 # ---- Tab: 개요
@@ -230,8 +226,8 @@ def appendix_ui():
                                 "모델 구성",
                                 ui.tags.ul(
                                     ui.tags.li("LightGBM (Raw Target)"),
-                                    ui.tags.li("XGBoost (Log Target)"),
-                                    ui.tags.li("HistGradientBoostingRegressor (Log Target)"),
+                                    ui.tags.li("XGBoost"),
+                                    ui.tags.li("HistGradientBoostingRegressor"),
                                     ui.tags.li("LightGBM (Log Target)"),
                                 ),
                             ),
@@ -281,7 +277,7 @@ def appendix_ui():
                                     ),
                                     class_="d-flex flex-wrap gap-2 mb-3"
                                 ),
-                                ui.output_ui("apx_learning_curve"),
+                                # ui.output_ui("apx_learning_curve"),
                             ),
                             id="apx_modeling_summary",
                             multiple=True,
