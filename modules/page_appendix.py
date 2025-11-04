@@ -1,3 +1,5 @@
+# ============================ modules/page_appendix.py (CSS-scoped) ============================
+from shiny import ui, render, reactive
 # ============================ modules/page_appendix.py (SCOPED, FULL) ============================
 from __future__ import annotations
 
@@ -49,10 +51,7 @@ from viz.appendix_modeling import (
 # ---- Tab: 결과/검증
 from viz.appendix_results import (
     render_metrics_table,
-    render_residual_plot,
     render_shap_summary,
-    render_shap_bar,
-    render_deploy_checklist,
 )
 
 
@@ -219,48 +218,74 @@ def appendix_ui():
                 ui.nav_panel(
                     "모델링",
                     ui.layout_columns(
-                        ui.TagList(
-                            ui.div(
-                                ui.h5("학습 전략", class_="billx-panel-title"),
+                        ui.accordion(
+                            ui.accordion_panel(
+                                "학습 전략",
                                 ui.tags.ul(
                                     ui.tags.li("TimeSeriesSplit(3) → 마지막 폴드 검증"),
                                     ui.tags.li("최신 시점 홀드아웃 유지"),
                                 ),
-                                class_="billx-panel"
                             ),
-                            ui.div(
-                                ui.h5("모델 구성", class_="billx-panel-title"),
+                            ui.accordion_panel(
+                                "모델 구성",
                                 ui.tags.ul(
                                     ui.tags.li("LightGBM (Raw Target)"),
                                     ui.tags.li("XGBoost (Log Target)"),
                                     ui.tags.li("HistGradientBoostingRegressor (Log Target)"),
                                     ui.tags.li("LightGBM (Log Target)"),
                                 ),
-                                class_="billx-panel"
                             ),
-                            ui.div(
-                                ui.h5("튜닝 방식", class_="billx-panel-title"),
+                            ui.accordion_panel(
+                                "튜닝 방식",
                                 ui.tags.ul(
                                     ui.tags.li("모델별 Random Search"),
-                                    ui.tags.li("최적 하이퍼파라미터 기록"),
+                                    ui.tags.li("최적 하이퍼파라미터 탐색 (Holdout MAE 기준)"),
                                 ),
-                                class_="billx-panel"
                             ),
-                            ui.div(
-                                ui.h5("평가 기준", class_="billx-panel-title"),
+                            ui.accordion_panel(
+                                "평가 기준",
                                 ui.tags.ul(
                                     ui.tags.li("Holdout MAE (원 단위)"),
                                 ),
-                                class_="billx-panel"
                             ),
-                            ui.div(
-                                ui.h5("앙상블 전략", class_="billx-panel-title"),
+                            ui.accordion_panel(
+                                "앙상블 전략",
                                 ui.tags.ul(
                                     ui.tags.li("NNLS 가중치 추정"),
                                     ui.tags.li("NNLS 성능이 단일 모델보다 낮으면 최고 단일 모델 사용"),
+                                    ui.tags.li("최종 가중치: LGBM_RAW 0.157, XGB 0.684, HGBR 0.000, LGBM_LOG 0.158 (Holdout MAE 1028.07)"),
                                 ),
-                                class_="billx-panel"
                             ),
+                            ui.accordion_panel(
+                                "학습/검증 곡선",
+                                ui.div(
+                                    ui.input_action_button(
+                                        "apx_curve_btn_lgb_raw",
+                                        "LGBM (RAW)",
+                                        class_="btn btn-outline-primary"
+                                    ),
+                                    ui.input_action_button(
+                                        "apx_curve_btn_xgb",
+                                        "XGBoost",
+                                        class_="btn btn-outline-primary"
+                                    ),
+                                    ui.input_action_button(
+                                        "apx_curve_btn_hgbr",
+                                        "HGBR",
+                                        class_="btn btn-outline-primary"
+                                    ),
+                                    ui.input_action_button(
+                                        "apx_curve_btn_lgb_log",
+                                        "LGBM (LOG)",
+                                        class_="btn btn-outline-primary"
+                                    ),
+                                    class_="d-flex flex-wrap gap-2 mb-3"
+                                ),
+                                ui.output_ui("apx_learning_curve"),
+                            ),
+                            id="apx_modeling_summary",
+                            multiple=True,
+                            open=["학습/검증 곡선"],
                         ),
                         ui.div(ui.h5("최종 모델 파라미터", class_="billx-panel-title"), ui.output_ui("apx_model_params"), class_="billx-panel"),
                         col_widths=[7, 5],
@@ -272,11 +297,18 @@ def appendix_ui():
                 ui.nav_panel(
                     "결과/검증",
                     ui.layout_columns(
-                        ui.div(ui.h5("평가 지표", class_="billx-panel-title"), ui.output_ui("apx_metrics_table"), ui.hr({"class": "soft"}), ui.output_ui("apx_residual_plot"), class_="billx-panel"),
-                        ui.div(ui.h5("설명가능성 (XAI)", class_="billx-panel-title"), ui.output_ui("apx_shap_summary"), ui.hr({"class": "soft"}), ui.output_ui("apx_shap_bar"), class_="billx-panel"),
+                        ui.div(
+                            ui.h5("모델별 잔차 분포", class_="billx-panel-title"),
+                            ui.output_ui("apx_shap_summary"),
+                            class_="billx-panel"
+                        ),
+                        ui.div(
+                            ui.h5("지상역률 분포 비교", class_="billx-panel-title"),
+                            ui.output_ui("apx_metrics_table"),
+                            class_="billx-panel"
+                        ),
                         col_widths=[6, 6],
                     ),
-                    ui.div(ui.h5("배포/모니터링 체크리스트", class_="billx-panel-title"), ui.output_ui("apx_checklist"), class_="billx-panel"),
                 ),
                 id="apx_tabs",
             ),
@@ -288,6 +320,28 @@ def appendix_ui():
 # ============================ Server ============================
 
 def appendix_server(input, output, session):
+    selected_curve_model = reactive.Value("LGBM (RAW)")
+
+    @reactive.Effect
+    @reactive.event(input.apx_curve_btn_lgb_raw)
+    def _curve_select_lgb_raw():
+        selected_curve_model.set("LGBM (RAW)")
+
+    @reactive.Effect
+    @reactive.event(input.apx_curve_btn_xgb)
+    def _curve_select_xgb():
+        selected_curve_model.set("XGBoost")
+
+    @reactive.Effect
+    @reactive.event(input.apx_curve_btn_hgbr)
+    def _curve_select_hgbr():
+        selected_curve_model.set("HGBR")
+
+    @reactive.Effect
+    @reactive.event(input.apx_curve_btn_lgb_log)
+    def _curve_select_lgb_log():
+        selected_curve_model.set("LGBM (LOG)")
+
     # ---- 개요
     @output
     @render.ui
@@ -403,7 +457,7 @@ def appendix_server(input, output, session):
     @output
     @render.ui
     def apx_learning_curve():
-        return render_learning_curve()
+        return render_learning_curve(selected_curve_model())
 
     # ---- 결과/검증
     @output
@@ -411,22 +465,7 @@ def appendix_server(input, output, session):
     def apx_metrics_table():
         return render_metrics_table()
 
-    @output
-    @render.ui
-    def apx_residual_plot():
-        return render_residual_plot()
-
-    @output
     @render.ui
     def apx_shap_summary():
         return render_shap_summary()
 
-    @output
-    @render.ui
-    def apx_shap_bar():
-        return render_shap_bar()
-
-    @output
-    @render.ui
-    def apx_checklist():
-        return render_deploy_checklist()

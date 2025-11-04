@@ -13,6 +13,11 @@ import pandas as pd
 from shiny import ui
 import plotly.graph_objects as go
 from viz.appendix_common import apply_layout, _PALETTE
+from pathlib import Path
+from scipy.stats import kurtosis, norm
+import plotly.figure_factory as ff
+from plotly.subplots import make_subplots
+
 
 
 def _ph(text: str = "여기에 표/그래프가 표시됩니다.", h: int = 260):
@@ -27,188 +32,485 @@ def _ph(text: str = "여기에 표/그래프가 표시됩니다.", h: int = 260)
 # ---------------------------------------------------------------------
 # 1) 평가 지표 표
 # ---------------------------------------------------------------------
-def render_metrics_table(
-    metrics: Optional[pd.DataFrame] = None,
-    order: Optional[list[str]] = None,
-):
+
+
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from scipy.stats import kurtosis
+import plotly.figure_factory as ff
+import plotly.graph_objects as go
+from shiny import ui
+
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from scipy.stats import kurtosis
+import plotly.figure_factory as ff
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from shiny import ui
+
+
+# ---------------------------------------------------------------------
+# 1) 모델별 잔차 분포 + 대표 모델 σ 커버리지 표시
+# ---------------------------------------------------------------------
+def render_shap_summary():
     """
-    평가 지표 표를 렌더링.
-    - metrics가 None이면 샘플 스켈레톤 테이블을 표시.
-    - metrics 포맷 예시:
-        pd.DataFrame({
-            "Metric": ["RMSE","MAE","MAPE(%)","R²"],
-            "Value":  [123.4, 98.7, 12.3, 0.87],
-            "Note":   ["holdout","holdout","holdout","holdout"]
-        })
+    holdout_predictions.csv를 기반으로 모델별 잔차(Residual) 분포를 표시하고,
+    대표 모델(첫 번째 모델)의 ±σ 수직선을 시각화합니다.
     """
-    if metrics is None or not isinstance(metrics, pd.DataFrame) or metrics.empty:
-        sample = pd.DataFrame({
-            "Metric": ["RMSE", "MAE", "MAPE(%)", "R²"],
-            "Value":  ["—", "—", "—", "—"],
-            "Note":   ["모델 학습 후 반영", "모델 학습 후 반영", "모델 학습 후 반영", "모델 학습 후 반영"],
-        })
-        html = sample.to_html(classes="table table-sm table-striped", index=False, border=0)
-        return ui.HTML(
-            f"""
-            <div class="p-2">
-              <div class="alert alert-warning mb-2">
-                현재 표시할 지표가 없어요. 학습 후 반환된 지표 DataFrame을 <code>render_metrics_table(metrics=...)</code>로 넘기면 표가 채워집니다.
-              </div>
-              {html}
-            </div>
-            """
+    csv_path = Path(__file__).resolve().parents[1] / "data" / "output" / "holdout_predictions.csv"
+
+    try:
+        df = pd.read_csv(csv_path)
+    except FileNotFoundError:
+        return ui.div("❌ holdout_predictions.csv 파일을 찾을 수 없습니다.", class_="alert alert-danger")
+    except Exception as e:
+        return ui.div(f"❌ 파일 로드 오류: {str(e)}", class_="alert alert-danger")
+
+    ACTUAL_COL = "실제요금"
+    if ACTUAL_COL not in df.columns:
+        return ui.div(f"❌ '{ACTUAL_COL}' 컬럼을 찾을 수 없습니다.", class_="alert alert-warning")
+
+    PRED_COLS = [c for c in df.columns if c.endswith("_pred")]
+    if not PRED_COLS:
+        return ui.div("❌ '_pred'로 끝나는 예측 컬럼이 없습니다.", class_="alert alert-warning")
+
+    # 모델별 품질 메트릭 계산
+    metrics = []
+    for col in PRED_COLS:
+        model = col.replace("_pred", "")
+        residuals = df[col] - df[ACTUAL_COL]
+        residuals = residuals.dropna()
+        
+        if len(residuals) == 0:
+            continue
+            
+        mae = np.mean(np.abs(residuals))
+        rmse = np.sqrt(np.mean(residuals ** 2))
+        std = np.std(residuals)
+        kurt_val = kurtosis(residuals)
+        c1 = np.mean((np.abs(residuals) <= std)) * 100
+        c2 = np.mean((np.abs(residuals) <= 2 * std)) * 100
+        c3 = np.mean((np.abs(residuals) <= 3 * std)) * 100
+        metrics.append((model, mae, rmse, std, kurt_val, c1, c2, c3))
+
+    if not metrics:
+        return ui.div("❌ 계산 가능한 메트릭이 없습니다.", class_="alert alert-warning")
+
+    metric_df = pd.DataFrame(metrics, columns=["모델", "MAE", "RMSE", "STD", "Kurtosis", "±1σ", "±2σ", "±3σ"])
+
+    # 잔차 분포 그래프 (KDE)
+    hist_data, labels = [], []
+    for col in PRED_COLS:
+        residuals = (df[col] - df[ACTUAL_COL]).dropna()
+        if len(residuals) > 0:
+            hist_data.append(residuals.values)
+            labels.append(col.replace("_pred", ""))
+
+    if not hist_data:
+        return ui.div("❌ 그래프 생성을 위한 데이터가 없습니다.", class_="alert alert-warning")
+
+    try:
+        fig_resid = ff.create_distplot(hist_data, labels, show_hist=True, show_rug=False)
+        fig_resid.update_layout(
+            title=dict(text="<b>모델별 잔차(Residual) 분포 및 대표 σ 경계</b>", font=dict(size=18), x=0.5),
+            xaxis_title="잔차 (예측값 - 실제값)",
+            yaxis_title="Density",
+            plot_bgcolor="white",
+            xaxis=dict(gridcolor="lightgrey"),
+            yaxis=dict(gridcolor="lightgrey"),
+            height=500,
+            showlegend=True,
+        )
+    except Exception as e:
+        return ui.div(f"❌ 그래프 생성 오류: {str(e)}", class_="alert alert-danger")
+
+    # 대표 모델 기준 ±σ 수직선 추가
+    first_model = PRED_COLS[0]
+    first_name = first_model.replace("_pred", "")
+    first_residuals = (df[first_model] - df[ACTUAL_COL]).dropna()
+    mean_val = np.mean(first_residuals)
+    std_val = np.std(first_residuals)
+
+    sigma_levels = [1, 2, 3]
+    colors = ["red", "orange", "gray"]
+
+    for sigma, color in zip(sigma_levels, colors):
+        fig_resid.add_vline(
+            x=mean_val + sigma * std_val,
+            line=dict(color=color, width=1.5, dash="dot"),
+            annotation_text=f"+{sigma}σ",
+            annotation_position="top right"
+        )
+        fig_resid.add_vline(
+            x=mean_val - sigma * std_val,
+            line=dict(color=color, width=1.5, dash="dot"),
+            annotation_text=f"-{sigma}σ",
+            annotation_position="top left"
         )
 
-    df = metrics.copy()
-    if order:
-        df = df.set_index("Metric").reindex(order).reset_index()
+        # 품질 요약 표
+        rows_html = "".join(
+                """
+                <tr>
+                    <td class='fw-semibold'>{model}</td>
+                    <td>{mae:.3f}</td>
+                    <td>{std:.3f}</td>
+                    <td>{kurt:.2f}</td>
+                    <td>{c1:.2f}%</td>
+                    <td>{c2:.2f}%</td>
+                    <td>{c3:.2f}%</td>
+                </tr>
+                """.format(
+                        model=r["모델"],
+                        mae=r["MAE"],
+                        std=r["STD"],
+                        kurt=r["Kurtosis"],
+                        c1=r["±1σ"],
+                        c2=r["±2σ"],
+                        c3=r["±3σ"],
+                )
+                for _, r in metric_df.iterrows()
+        )
 
-    # 수치 반올림
-    def _fmt(v: Any):
-        try:
-            if isinstance(v, (int, np.integer)):
-                return f"{int(v):,}"
-            if isinstance(v, (float, np.floating)):
-                return f"{v:,.4f}"
-        except Exception:
-            pass
-        return v
-
-    if "Value" in df.columns:
-        df["Value"] = df["Value"].map(_fmt)
-
-    html = df.to_html(classes="table table-sm table-striped", index=False, border=0)
-    return ui.HTML(
-        f"""
-        <div class="p-2">
-          {html}
-          <div class="small-muted mt-2">※ 기본 스코어는 홀드아웃 기준을 권장합니다. (교차검증 평균/표준편차는 부가로 표시)</div>
+        desc_html = f"""
+        <div class='p-3'>
+            <h5>📏 품질 요약 (대표 모델: {first_name})</h5>
+            <div class='table-responsive'>
+                <table class='table table-sm table-striped align-middle mb-0' style='font-size:0.92rem;'>
+                    <thead class='table-light'>
+                        <tr>
+                            <th>모델</th>
+                            <th>MAE</th>
+                            <th>STD</th>
+                            <th>Kurtosis</th>
+                            <th>±1σ</th>
+                            <th>±2σ</th>
+                            <th>±3σ</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                </table>
+            </div>
         </div>
         """
-    )
-
-
-# ---------------------------------------------------------------------
-# 2) 잔차/에러 분포
-# ---------------------------------------------------------------------
-def render_residual_plot(
-    y_true: Optional[np.ndarray] = None,
-    y_pred: Optional[np.ndarray] = None,
-    title: str = "잔차(Actual - Pred) 분포 및 추이"
-):
-    """
-    잔차 플롯 (상단: 시퀀스, 하단: 히스토그램).
-    - y_true, y_pred가 없으면 플레이스홀더 안내.
-    """
-    if y_true is None or y_pred is None:
-        return _ph("잔차 플롯은 학습/예측 후 표시됩니다. (y_true, y_pred 전달)", 300)
-
-    y_true = np.asarray(y_true).astype(float)
-    y_pred = np.asarray(y_pred).astype(float)
-    n = min(len(y_true), len(y_pred))
-    if n == 0:
-        return _ph("잔차 플롯: 입력 길이가 0입니다.", 300)
-
-    y_true, y_pred = y_true[:n], y_pred[:n]
-    resid = y_true - y_pred
-    x = np.arange(n)
-
-    # 상단: 잔차 시퀀스
-    fig1 = go.Figure()
-    fig1.add_scatter(x=x, y=resid, mode="lines", name="Residual", line=dict(width=1.2, color=_PALETTE["primary"]))
-    fig1.add_hline(y=0.0, line=dict(color=_PALETTE["muted"], width=1, dash="dot"))
-    apply_layout(fig1, title=f"{title} — 시퀀스", height=320)
-    fig1.update_xaxes(title_text="Index")
-    fig1.update_yaxes(title_text="Residual")
-
-    # 하단: 히스토그램
-    fig2 = go.Figure()
-    fig2.add_histogram(x=resid, nbinsx=50, marker_color=_PALETTE["accent"], name="Residual Hist")
-    apply_layout(fig2, title=f"{title} — 분포", height=320)
-    fig2.update_xaxes(title_text="Residual")
-    fig2.update_yaxes(title_text="Count")
 
     html = (
         '<div class="billx-panel">'
-        + fig1.to_html(include_plotlyjs='cdn', full_html=False)
-        + '</div><div class="billx-panel">'
-        + fig2.to_html(include_plotlyjs='cdn', full_html=False)
+        + fig_resid.to_html(include_plotlyjs="cdn", full_html=False)
         + '</div>'
+        + desc_html
     )
+
     return ui.HTML(html)
 
 
 # ---------------------------------------------------------------------
-# 3) SHAP Summary
+# 2) ±3σ 이상치 지상역률(%) 분포 분석
 # ---------------------------------------------------------------------
-def render_shap_summary(
-    shap_values: Optional[np.ndarray] = None,
-    feature_names: Optional[list[str]] = None,
-    max_features: int = 20,
-):
+def render_metrics_table():
     """
-    SHAP Summary(벌레떼 플롯 대체용 간이 시각화).
-    - 실제 shap plot은 JS 연동/이미지 임베드가 필요하니, 여기서는
-      '|mean(|SHAP|)|' 상위 n개 바차트로 대체. (톤 통일)
-    - shap_values: (n_samples, n_features)
+    ±3σ 이상 잔차 시점의 지상역률(%) 분포를 원본 전체와 비교 분석합니다.
     """
-    if shap_values is None or feature_names is None:
-        return _ph("SHAP Summary는 학습 후 shap_values, feature_names를 전달하면 그려집니다.", 300)
+    base_dir = Path("./data")
+    pred_path = base_dir / "output" / "holdout_predictions.csv"
+    train_path = base_dir / "train.csv"
 
-    sv = np.asarray(shap_values, dtype=float)
-    if sv.ndim != 2 or sv.shape[1] != len(feature_names):
-        return _ph("SHAP Summary: shap_values shape가 feature_names와 맞지 않습니다.", 300)
+    try:
+        df_pred = pd.read_csv(pred_path)
+        df_train = pd.read_csv(train_path)
+    except FileNotFoundError as e:
+        return ui.div(f"❌ CSV 파일을 찾을 수 없습니다: {str(e)}", class_="alert alert-danger")
+    except Exception as e:
+        return ui.div(f"❌ 파일 로드 오류: {str(e)}", class_="alert alert-danger")
 
-    mean_abs = np.abs(sv).mean(axis=0)
-    idx = np.argsort(-mean_abs)[:max_features]
-    top_imp = mean_abs[idx]
-    top_feat = [feature_names[i] for i in idx]
+    # 필수 컬럼 확인
+    if "지상역률(%)" not in df_train.columns:
+        return ui.div("❌ train.csv에 '지상역률(%)' 컬럼이 없습니다.", class_="alert alert-warning")
+    
+    if "실제요금" not in df_pred.columns:
+        return ui.div("❌ holdout_predictions.csv에 '실제요금' 컬럼이 없습니다.", class_="alert alert-warning")
 
-    fig = go.Figure()
-    fig.add_bar(
-        x=top_imp[::-1],
-        y=top_feat[::-1],
-        orientation="h",
-        marker_color=_PALETTE["primary"],
-        name="|mean(|SHAP|)|"
+    # 대표 모델 선택
+    pred_cols = [c for c in df_pred.columns if c.endswith("_pred")]
+    if not pred_cols:
+        return ui.div("❌ '_pred'로 끝나는 예측 컬럼이 없습니다.", class_="alert alert-warning")
+
+    target_col = pred_cols[0]
+    model_name = target_col.replace("_pred", "")
+    df_pred["Residual"] = df_pred[target_col] - df_pred["실제요금"]
+
+    # 데이터 병합
+    if len(df_pred) <= len(df_train):
+        df_merge = df_pred.copy()
+        df_merge["지상역률(%)"] = df_train["지상역률(%)"].iloc[:len(df_pred)].values
+    else:
+        return ui.div("❌ 예측 데이터가 원본보다 깁니다.", class_="alert alert-warning")
+
+    # ±3σ 기준 이상치 추출
+    residuals = df_merge["Residual"].dropna()
+    if len(residuals) == 0:
+        return ui.div("❌ 잔차 데이터가 없습니다.", class_="alert alert-warning")
+        
+    mean_resid = residuals.mean()
+    std_resid = residuals.std()
+    upper_bound = mean_resid + 3 * std_resid
+    lower_bound = mean_resid - 3 * std_resid
+
+    df_normal = df_merge[(df_merge["Residual"] >= lower_bound) & (df_merge["Residual"] <= upper_bound)]
+    df_outlier = df_merge[(df_merge["Residual"] > upper_bound) | (df_merge["Residual"] < lower_bound)]
+
+    # 지상역률(%) 분포 비교 그래프
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("전체 데이터 지상역률(%) 분포", "±3σ 이상치 지상역률(%) 분포"),
+        horizontal_spacing=0.15
     )
-    apply_layout(fig, title="SHAP Summary (Top Features by |mean(|SHAP|)|)", height=420)
-    fig.update_xaxes(title_text="|mean(|SHAP|)|")
-    fig.update_yaxes(title_text="Feature")
 
-    return ui.HTML(fig.to_html(include_plotlyjs='cdn', full_html=False))
+    # 전체 지상역률(%) 분포
+    pf_all = df_merge["지상역률(%)"].dropna()
+    fig.add_trace(
+        go.Histogram(x=pf_all, nbinsx=30, name="전체", marker_color="lightblue", showlegend=False),
+        row=1, col=1
+    )
+
+    # 이상치 지상역률(%) 분포
+    if len(df_outlier) > 0:
+        pf_outlier = df_outlier["지상역률(%)"].dropna()
+        fig.add_trace(
+            go.Histogram(x=pf_outlier, nbinsx=30, name="±3σ 이상치", marker_color="red", showlegend=False),
+            row=1, col=2
+        )
+
+    fig.update_xaxes(title_text="지상역률(%)", row=1, col=1)
+    fig.update_xaxes(title_text="지상역률(%)", row=1, col=2)
+    fig.update_yaxes(title_text="빈도", row=1, col=1)
+    fig.update_yaxes(title_text="빈도", row=1, col=2)
+
+    fig.update_layout(
+        title=dict(text="<b>지상역률(%) 분포 비교: 전체 vs ±3σ 이상치</b>", x=0.5, font=dict(size=18)),
+        height=450,
+        plot_bgcolor="white",
+        showlegend=False
+    )
+
+    # 통계 분석
+    analysis_html = "<div class='p-3'><h5>📊 지상역률(%) 분포 분석</h5>"
+    
+    pf_all_mean = pf_all.mean()
+    pf_all_std = pf_all.std()
+    
+    analysis_html += f"<p><b>전체 데이터:</b> 평균 지상역률(%) {pf_all_mean:.3f}, 표준편차 {pf_all_std:.3f}</p>"
+    
+    if len(df_outlier) > 0:
+        pf_out_mean = pf_outlier.mean()
+        pf_out_std = pf_outlier.std()
+        diff = pf_out_mean - pf_all_mean
+        
+        analysis_html += f"<p><b>±3σ 이상치:</b> 평균 지상역률(%) {pf_out_mean:.3f}, 표준편차 {pf_out_std:.3f}</p>"
+        analysis_html += f"<p><b>차이:</b> {abs(diff):.3f} ({'+' if diff > 0 else ''}{diff:.3f})</p>"
+        
+        # 해석
+        if abs(diff) < 0.02:
+            analysis_html += "<p style='color: green;'>✅ 지상역률(%) 차이가 매우 작습니다 (0.02 미만). 이상치는 <b>지상역률(%)과 무관</b>하게 발생한 것으로 보입니다.</p>"
+        elif abs(diff) < 0.05:
+            analysis_html += "<p style='color: orange;'>⚠️ 지상역률(%) 차이가 다소 있습니다 (0.02~0.05). 지상역률(%)이 이상치 발생에 <b>일부 영향</b>을 줄 수 있습니다.</p>"
+        else:
+            analysis_html += f"<p style='color: red;'>🚨 지상역률(%) 차이가 큽니다 (0.05 이상). ±3σ 이상치는 <b>{'높은' if diff > 0 else '낮은'} 지상역률(%)</b> 구간에서 주로 발생합니다.</p>"
+            
+        # 시간대/월별 분석 간단히
+        if "측정일시" in df_train.columns:
+            df_merge["측정일시"] = pd.to_datetime(df_train["측정일시"].iloc[:len(df_merge)], errors='coerce')
+            df_merge["hour"] = df_merge["측정일시"].dt.hour
+            df_merge["month"] = df_merge["측정일시"].dt.month
+            df_merge["weekday"] = df_merge["측정일시"].dt.dayofweek
+            
+            df_outlier_time = df_merge[(df_merge["Residual"] > upper_bound) | (df_merge["Residual"] < lower_bound)]
+            
+            hour_dist = df_outlier_time["hour"].value_counts(normalize=True) * 100
+            month_dist = df_outlier_time["month"].value_counts(normalize=True) * 100
+            weekday_dist = df_outlier_time["weekday"].value_counts(normalize=True) * 100
+            
+            analysis_html += "<hr><h5>⏰ 시간적 패턴</h5>"
+            
+            # 월별
+            if len(month_dist) > 0:
+                max_month_pct = month_dist.max()
+                min_month_pct = month_dist.min()
+                if max_month_pct - min_month_pct < 5:
+                    analysis_html += f"<p>• <b>월별:</b> 차이 없음 (최대 {max_month_pct:.1f}% - 최소 {min_month_pct:.1f}% = {max_month_pct - min_month_pct:.1f}%p)</p>"
+                else:
+                    top_month = month_dist.idxmax()
+                    analysis_html += f"<p>• <b>월별:</b> {int(top_month)}월에 집중 ({month_dist[top_month]:.1f}%)</p>"
+            
+            # 시간대
+            if len(hour_dist) > 0:
+                max_hour_pct = hour_dist.max()
+                min_hour_pct = hour_dist.min()
+                if max_hour_pct - min_hour_pct < 5:
+                    analysis_html += f"<p>• <b>시간대:</b> 차이 없음 (최대 {max_hour_pct:.1f}% - 최소 {min_hour_pct:.1f}% = {max_hour_pct - min_hour_pct:.1f}%p)</p>"
+                else:
+                    top_hour = hour_dist.idxmax()
+                    analysis_html += f"<p>• <b>시간대:</b> {int(top_hour)}시에 집중 ({hour_dist[top_hour]:.1f}%)</p>"
+            
+            # 요일
+            day_map = ["월", "화", "수", "목", "금", "토", "일"]
+            if len(weekday_dist) > 0:
+                max_day_pct = weekday_dist.max()
+                min_day_pct = weekday_dist.min()
+                if max_day_pct - min_day_pct < 5:
+                    analysis_html += f"<p>• <b>요일:</b> 차이 없음 (최대 {max_day_pct:.1f}% - 최소 {min_day_pct:.1f}% = {max_day_pct - min_day_pct:.1f}%p)</p>"
+                else:
+                    top_day = weekday_dist.idxmax()
+                    analysis_html += f"<p>• <b>요일:</b> {day_map[int(top_day)]}요일에 집중 ({weekday_dist[top_day]:.1f}%)</p>"
+    else:
+        analysis_html += "<p style='color: green;'>✅ ±3σ 이상치가 없습니다. 모델이 안정적입니다.</p>"
+    
+    analysis_html += "</div>"
+
+    html = (
+        '<div class="billx-panel">'
+        + fig.to_html(include_plotlyjs="cdn", full_html=False)
+        + '</div>'
+        + analysis_html
+    )
+
+    return ui.HTML(html)
+
+
+# 별칭
+# ---------------------------------------------------------------------
+# 2) ±3σ 이상치 진상역률(%) 분포 분석
+# ---------------------------------------------------------------------
+def render_residual_plot():
+    """
+    ±3σ 이상 잔차 시점의 진상역률(%) 분포를 원본 전체와 비교 분석합니다.
+    """
+    base_dir = Path("./data")
+    pred_path = base_dir / "output" / "holdout_predictions.csv"
+    train_path = base_dir / "train.csv"
+
+    try:
+        df_pred = pd.read_csv(pred_path)
+        df_train = pd.read_csv(train_path)
+    except FileNotFoundError as e:
+        return ui.div(f"❌ CSV 파일을 찾을 수 없습니다: {str(e)}", class_="alert alert-danger")
+    except Exception as e:
+        return ui.div(f"❌ 파일 로드 오류: {str(e)}", class_="alert alert-danger")
+
+    # 필수 컬럼 확인
+    if "진상역률(%)" not in df_train.columns:
+        return ui.div("❌ train.csv에 '진상역률(%)' 컬럼이 없습니다.", class_="alert alert-warning")
+    if "실제요금" not in df_pred.columns:
+        return ui.div("❌ holdout_predictions.csv에 '실제요금' 컬럼이 없습니다.", class_="alert alert-warning")
+
+    # 대표 모델 선택
+    pred_cols = [c for c in df_pred.columns if c.endswith("_pred")]
+    if not pred_cols:
+        return ui.div("❌ '_pred'로 끝나는 예측 컬럼이 없습니다.", class_="alert alert-warning")
+
+    target_col = pred_cols[0]
+    model_name = target_col.replace("_pred", "")
+    df_pred["Residual"] = df_pred[target_col] - df_pred["실제요금"]
+
+    # 데이터 병합
+    if len(df_pred) <= len(df_train):
+        df_merge = df_pred.copy()
+        df_merge["진상역률(%)"] = df_train["진상역률(%)"].iloc[:len(df_pred)].values
+    else:
+        return ui.div("❌ 예측 데이터가 원본보다 깁니다.", class_="alert alert-warning")
+
+    # ±3σ 기준 이상치 추출
+    residuals = df_merge["Residual"].dropna()
+    mean_resid = residuals.mean()
+    std_resid = residuals.std()
+    upper_bound = mean_resid + 3 * std_resid
+    lower_bound = mean_resid - 3 * std_resid
+
+    df_outlier = df_merge[(df_merge["Residual"] > upper_bound) | (df_merge["Residual"] < lower_bound)]
+
+    # 진상역률(%) 분포 비교 그래프
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("전체 데이터 진상역률(%) 분포", "±3σ 이상치 진상역률(%) 분포"),
+        horizontal_spacing=0.15
+    )
+
+    pf_all = df_merge["진상역률(%)"].dropna()
+    fig.add_trace(
+        go.Histogram(x=pf_all, nbinsx=30, name="전체", marker_color="lightblue", showlegend=False),
+        row=1, col=1
+    )
+
+    if len(df_outlier) > 0:
+        pf_outlier = df_outlier["진상역률(%)"].dropna()
+        fig.add_trace(
+            go.Histogram(x=pf_outlier, nbinsx=30, name="±3σ 이상치", marker_color="red", showlegend=False),
+            row=1, col=2
+        )
+
+    fig.update_xaxes(title_text="진상역률(%)", row=1, col=1)
+    fig.update_xaxes(title_text="진상역률(%)", row=1, col=2)
+    fig.update_yaxes(title_text="빈도", row=1, col=1)
+    fig.update_yaxes(title_text="빈도", row=1, col=2)
+    fig.update_layout(
+        title=dict(text="<b>진상역률(%) 분포 비교: 전체 vs ±3σ 이상치</b>", x=0.5, font=dict(size=18)),
+        height=450,
+        plot_bgcolor="white"
+    )
+
+    # 분석 텍스트
+    analysis_html = "<div class='p-3'><h5>📊 진상역률(%) 이상치 분석</h5>"
+
+    pf_all_mean = pf_all.mean()
+    pf_all_std = pf_all.std()
+
+    if len(df_outlier) > 0:
+        pf_out_mean = df_outlier["진상역률(%)"].mean()
+        diff = pf_out_mean - pf_all_mean
+
+        analysis_html += f"""
+        <p><b>전체 평균 진상역률(%)</b>: {pf_all_mean:.3f} |
+        <b>±3σ 이상치 평균</b>: {pf_out_mean:.3f} |
+        <b>차이</b>: {diff:+.3f}</p>
+        """
+
+        if abs(diff) < 0.02:
+            analysis_html += "<p style='color:green;'>✅ 차이가 매우 작습니다. 진상역률(%)과 이상치는 거의 무관합니다.</p>"
+        elif abs(diff) < 0.05:
+            analysis_html += "<p style='color:orange;'>⚠️ 약간의 차이가 있습니다. 진상역률(%) 변화가 일부 영향을 미칠 수 있습니다.</p>"
+        else:
+            trend = "높은" if diff > 0 else "낮은"
+            analysis_html += f"<p style='color:red;'>🚨 ±3σ 이상치는 <b>{trend} 진상역률(%)</b> 구간에서 집중 발생합니다.</p>"
+    else:
+        analysis_html += "<p style='color:green;'>✅ ±3σ 이상치가 없습니다. 모델의 안정성이 우수합니다.</p>"
+
+    analysis_html += "</div>"
+
+    html = (
+        '<div class="billx-panel">'
+        + fig.to_html(include_plotlyjs="cdn", full_html=False)
+        + '</div>'
+        + analysis_html
+    )
+
+    return ui.HTML(html)
+
+
 
 
 # ---------------------------------------------------------------------
 # 4) SHAP Bar (특정 샘플/집단 평균의 feature 영향 Top-K)
 # ---------------------------------------------------------------------
 def render_shap_bar(
-    contrib: Optional[Dict[str, float]] = None,
-    top_k: int = 15,
-    title: str = "상위 피처 영향 (SHAP Bar)"
+
 ):
-    """
-    단일 벡터 형태의 SHAP 기여도 dict를 받아 상위 K개 수평 바차트로 표현.
-    - contrib 예시: {"oof_kwh_lag24h": 0.12, "how_resid_kwh": -0.08, ...}
-    - 값의 절댓값 기준으로 정렬, 색은 양수/음수 구분.
-    """
-    if not contrib:
-        return _ph("SHAP Bar: contrib dict를 전달하면 상위 기여도 바를 표시합니다.", 300)
-
-    items = sorted(contrib.items(), key=lambda x: abs(float(x[1])), reverse=True)[:top_k]
-    names = [k for k, _ in items][::-1]
-    vals = np.array([float(v) for _, v in items][::-1])
-
-    colors = np.where(vals >= 0, _PALETTE["accent"], _PALETTE["danger"]).tolist()
-
-    fig = go.Figure()
-    fig.add_bar(x=vals, y=names, orientation="h", marker_color=colors, name="SHAP contrib")
-    apply_layout(fig, title=title, height=420)
-    fig.update_xaxes(title_text="Contribution (±)")
-    fig.update_yaxes(title_text="Feature")
-
-    return ui.HTML(fig.to_html(include_plotlyjs='cdn', full_html=False))
-
+   
+    return 0
 
 # ---------------------------------------------------------------------
 # 5) 배포/모니터링 체크리스트

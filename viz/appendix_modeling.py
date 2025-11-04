@@ -165,22 +165,29 @@ def _load_learning_curves() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _render_learning_curve(data: pd.DataFrame) -> ui.HTML:
+def _render_learning_curve(data: pd.DataFrame, selected_model: str | None = None) -> ui.HTML:
     if data.empty:
+        message = "학습 곡선 데이터를 찾을 수 없습니다."
+        if selected_model:
+            message = f"{selected_model} 학습 곡선을 찾을 수 없습니다."
         return ui.div(
-            "학습 곡선 데이터를 찾을 수 없습니다.",
+            message,
             class_="alert alert-info mb-0 small"
         )
 
     data = data.dropna(subset=["value"]).sort_values(["model", "series", "iteration"])
     data["label"] = data["model"] + " · " + data["series"]
 
+    title = "Learning Curves (MAE)"
+    if selected_model:
+        title = f"{selected_model} Learning Curve (MAE)"
+
     fig = px.line(
         data,
         x="iteration",
         y="value",
         color="label",
-        title="Learning Curves (MAE)",
+        title=title,
     )
     fig.update_traces(mode="lines")
     fig.update_layout(
@@ -196,6 +203,8 @@ def _render_learning_curve(data: pd.DataFrame) -> ui.HTML:
     return ui.HTML(html)
 
 
-def render_learning_curve():
+def render_learning_curve(selected_model: str | None = None):
     data = _load_learning_curves()
-    return _render_learning_curve(data)
+    if selected_model:
+        data = data[data["model"] == selected_model]
+    return _render_learning_curve(data, selected_model)

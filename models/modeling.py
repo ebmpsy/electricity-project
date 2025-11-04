@@ -730,7 +730,7 @@ for params in hgbr_samples:
 
     model = HistGradientBoostingRegressor(
         random_state=RANDOM_STATE,
-        early_stopping=False,  # 조기 종료 끔
+        early_stopping=False,
         max_iter=max_iter,
         **trial
     )
